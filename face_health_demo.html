@@ -1,0 +1,129 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"/><title>Face Health Demo</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  body{font-family:Arial;background:#081025;color:#e8f7ff;padding:12px;}
+  .card{background:#071126;padding:12px;border-radius:10px;}
+  video{width:100%;max-width:640px;border-radius:8px;}
+  .metrics{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+  .metric{background:#062031;padding:8px;border-radius:8px;flex:1;min-width:120px}
+</style>
+</head>
+<body>
+  <div class="card">
+    <h2>Face Health Scanner (visual cues)</h2>
+    <video id="video" autoplay playsinline></video>
+    <canvas id="overlay" style="position:absolute;left:0;top:0;pointer-events:none"></canvas>
+    <div style="margin-top:8px">
+      <button id="flipBtn">Flip Camera</button>
+      <button id="scanBtn">Scan Now (upload summary)</button>
+      <button id="speakBtn">Speak Findings</button>
+    </div>
+    <div class="metrics">
+      <div class="metric">Blink rate: <span id="blinkRate">—</span></div>
+      <div class="metric">Avg EAR: <span id="ear">—</span></div>
+      <div class="metric">Under-eye darkness: <span id="darkScore">—</span></div>
+    </div>
+    <div style="margin-top:10px" id="findings">No scan yet.</div>
+  </div>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+
+<script>
+(async ()=>{
+  const USE_MOCK = (localStorage.getItem('USE_MOCK_DEMO') !== '0');
+  function mockAssistant(findingsText, numericScores){
+    return Promise.resolve({
+      status:'ok',
+      data:{
+        summary:'Demo: mild eye fatigue and slight under-eye darkness.',
+        suggestions:['Drink water', 'Rest 20 minutes', 'Cool compress for under-eye'],
+        disclaimer:'Demo only.',
+        action:'If concerned, check temperature with a thermometer.'
+      }
+    });
+  }
+  async function sendToServer(findingsText, numericScores, thumbnail){
+    try{
+      const resp = await fetch('/api/analyze', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ findingsText, numericScores, thumbnail64: thumbnail }) });
+      return await resp.json();
+    }catch(e){
+      console.error(e); return { status:'error', message: e.message };
+    }
+  }
+  async function getAssistant(findingsText, numericScores, thumbnail){
+    if(USE_MOCK) return mockAssistant(findingsText, numericScores);
+    return await sendToServer(findingsText, numericScores, thumbnail);
+  }
+
+  // minimal face mesh integration
+  const video = document.getElementById('video'), overlay = document.getElementById('overlay'), ctx = overlay.getContext('2d');
+  let cam, facingMode='user';
+  const faceMesh = new FaceMesh({ locateFile: (f)=>`https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${f}`});
+  faceMesh.setOptions({ maxNumFaces:1, refineLandmarks:true, minDetectionConfidence:0.6, minTrackingConfidence:0.6 });
+  let blinkHistory = [], eyeClosedState=false, eyeClosedStart=0;
+
+  function toPixel(l){ return {x: l.x*overlay.width, y: l.y*overlay.height}; }
+  function pdist(a,b){ const dx=a.x-b.x, dy=a.y-b.y; return Math.sqrt(dx*dx+dy*dy); }
+  function computeEAR(l, idxs){
+    const p1=toPixel(l[idxs[0]]), p2=toPixel(l[idxs[1]]), p3=toPixel(l[idxs[2]]), p4=toPixel(l[idxs[3]]), p5=toPixel(l[idxs[4]]), p6=toPixel(l[idxs[5]]);
+    const A = pdist(p2,p6), B = pdist(p3,p5), C = pdist(p1,p4); if(C===0) return 0; return (A+B)/(2*C);
+  }
+
+  faceMesh.onResults((results)=>{
+    if(video.videoWidth){ overlay.width = video.videoWidth; overlay.height = video.videoHeight; }
+    ctx.clearRect(0,0,overlay.width,overlay.height);
+    if(!results.multiFaceLandmarks || results.multiFaceLandmarks.length===0){ return; }
+    const lm = results.multiFaceLandmarks[0];
+    drawConnectors(ctx, lm, FACEMESH_TESSELATION, {color:'#7ee7ff', lineWidth:1});
+    drawLandmarks(ctx, lm, {color:'#7ee7ff', lineWidth:1});
+    // EAR sample indices (approx)
+    const LEFT_EYE = [33,160,158,133,153,144], RIGHT_EYE = [362,385,387,263,373,380];
+    const earL = computeEAR(lm, LEFT_EYE), earR = computeEAR(lm, RIGHT_EYE), earAvg = (earL+earR)/2;
+    document.getElementById('ear').innerText = earAvg.toFixed(3);
+
+    // blink logic
+    const now = Date.now(); const isClosed = earAvg < 0.18;
+    if(isClosed && !eyeClosedState){ eyeClosedState=true; eyeClosedStart=now; }
+    else if(!isClosed && eyeClosedState){ const dur = now - eyeClosedStart; if(dur>80){ blinkHistory.push(now); blinkHistory = blinkHistory.filter(t => now - t <= 60000); } eyeClosedState=false; eyeClosedStart=0; }
+    document.getElementById('blinkRate').innerText = blinkHistory.length;
+
+    // sample under-eye darkness by sampling small rectangles (quick & dirty)
+    // compute face bbox
+    let minx=1,miny=1,maxx=0,maxy=0; for(const p of lm){ minx=Math.min(minx,p.x); miny=Math.min(miny,p.y); maxx=Math.max(maxx,p.x); maxy=Math.max(maxy,p.y); }
+    const bbox = { x: Math.floor(minx*overlay.width), y: Math.floor(miny*overlay.height), w: Math.floor((maxx-minx)*overlay.width), h: Math.floor((maxy-miny)*overlay.height) };
+    // sample center region
+    function sample(x,y,w,h){ try{ const d = ctx.getImageData(x,y,w,h).data; let r=0,g=0,b=0; for(let i=0;i<d.length;i+=4){ r+=d[i]; g+=d[i+1]; b+=d[i+2]; } const px = d.length/4 || 1; return { r: r/px, g: g/px, b: b/px, lum: 0.299*(r/px)+0.587*(g/px)+0.114*(b/px) }; } catch(e){ return {r:0,g:0,b:0,lum:0}; } }
+    const faceRef = sample(bbox.x + bbox.w*0.4, bbox.y + bbox.h*0.35, Math.max(8,Math.round(bbox.w*0.2)), Math.max(6, Math.round(bbox.h*0.12)));
+    const under = sample(bbox.x + bbox.w*0.28, bbox.y + bbox.h*0.5,  Math.max(6, Math.round(bbox.w*0.15)), Math.max(6,Math.round(bbox.h*0.06)));
+    const darkScore = Math.max(0, Math.round(faceRef.lum - under.lum));
+    document.getElementById('darkScore').innerText = darkScore;
+
+    // Compose findings and allow upload
+    window.lastFindings = {
+      findingsText: `EAR ${earAvg.toFixed(3)}, blinkRate ${blinkHistory.length}, darkScore ${darkScore}`,
+      numericScores: { earAvg, blinkRate: blinkHistory.length, darkScore, faceLum: faceRef.lum }
+    };
+  });
+
+  async function startCamera(){ if(cam){ cam.stop(); cam=null; } const stream = await navigator.mediaDevices.getUserMedia({ video:{width:640, height:480, facingMode}, audio:false }); video.srcObject=stream; await video.play(); cam = new Camera(video, { onFrame: async ()=> await faceMesh.send({image: video}), width:640, height:480 }); cam.start(); }
+  document.getElementById('flipBtn').addEventListener('click', async ()=>{ facingMode = (facingMode==='user'?'environment':'user'); await startCamera(); });
+  document.getElementById('scanBtn').addEventListener('click', async ()=>{
+    if(!window.lastFindings) return alert('No readings yet — hold still for a second and try again.');
+    // capture tiny thumbnail
+    const c = document.createElement('canvas'); c.width=128; c.height=128; const ctx2 = c.getContext('2d'); ctx2.drawImage(video, 0, 0, c.width, c.height); const thumb = c.toDataURL('image/jpeg', 0.7);
+    const assistant = await getAssistant(window.lastFindings.findingsText, window.lastFindings.numericScores, thumb);
+    const data = assistant?.data || assistant;
+    if(data.summary) document.getElementById('findings').innerHTML = '<b>Summary:</b> ' + (data.summary) + '<br/><b>Suggestions:</b><ul>' + (data.suggestions||[]).map(s=>'<li>'+s+'</li>').join('') + '</ul>';
+    else document.getElementById('findings').innerText = JSON.stringify(data);
+  });
+  document.getElementById('speakBtn').addEventListener('click', ()=>{ const text = document.getElementById('findings').innerText; if(!text) return; const u=new SpeechSynthesisUtterance(text); u.lang='en-IN'; window.speechSynthesis.cancel(); window.speechSynthesis.speak(u); });
+
+  await startCamera();
+})();
+</script>
+</body>
+</html>
