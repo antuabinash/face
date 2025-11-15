@@ -1,47 +1,406 @@
 <!doctype html>
 <html>
 <head>
-  <meta charset="utf-8" />
-  <title>Smart Demo — Hand & Face Health</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <style>
-    body{font-family:Arial,Helvetica,sans-serif;background:#071025;color:#e8f7ff;padding:18px;}
-    .card{background:#081430;border-radius:12px;padding:16px;margin-bottom:12px;box-shadow:0 6px 24px rgba(0,0,0,0.5);}
-    .big{font-size:18px;font-weight:700;}
-    button{background:#06b6d4;color:#012;padding:10px 12px;border:none;border-radius:8px;cursor:pointer;}
-    a{color:#aeefff}
-  </style>
+<meta charset="utf-8" />
+<title>Face Health Demo — Shifted Mesh</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  :root{--bg:#061021;--card:#071226;--accent:#40c4ff;--muted:#98b6c6;}
+  body{margin:0;font-family:system-ui,Segoe UI,Roboto,Arial;background:var(--bg);color:#e6f7ff;display:flex;justify-content:center;padding:14px;box-sizing:border-box;}
+  .wrap{width:100%;max-width:900px;}
+  .card{background:linear-gradient(180deg, rgba(255,255,255,0.01), rgba(0,0,0,0.06));padding:12px;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,0.6);}
+  #videoWrap{position:relative;border-radius:12px;overflow:hidden;background:#000;}
+  video{width:100%;height:auto;display:block;}
+  canvas{position:absolute;left:0;top:0;pointer-events:none;}
+  .controls{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0;align-items:center;}
+  button{background:var(--accent);border:none;padding:8px 12px;border-radius:8px;color:#032a3b;font-weight:700;cursor:pointer;}
+  .metricGrid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px;}
+  .metric{background:rgba(255,255,255,0.02);padding:8px;border-radius:8px;font-size:14px;}
+  .muted{color:var(--muted);font-size:13px;}
+  footer{font-size:12px;color:var(--muted);margin-top:10px;}
+  @media (max-width:600px){
+    .metricGrid{grid-template-columns:repeat(1,1fr);}
+  }
+</style>
 </head>
 <body>
-  <div class="card">
-    <div class="big">Smart Gloves & Face Health Demo</div>
-    <p>Runs locally in the browser. Use the demos below. For Gemini enrichment the serverless backend is required.</p>
-    <p>
-      <button id="toggleMock">Toggle Mock Mode</button>
-      <span style="margin-left:12px">Mock mode: <strong id="mockState">ON</strong></span>
-    </p>
-    <p>
-      <a href="./gesture_demo.html" target="_blank">Open Gesture demo →</a>
-      &nbsp;&nbsp;|&nbsp;&nbsp;
-      <a href="./face_health_demo.html" target="_blank">Open Face Health demo →</a>
-    </p>
-    <p style="font-size:13px;color:#9fb2c3">
-      Demo mode is mock by default (no API key). When you deploy server and set environment variables, switch this to REAL to call your backend.
-    </p>
+  <div class="wrap card">
+    <h2 style="margin:4px 0 8px 0">Face Health Scanner — Demo</h2>
+
+    <div id="videoWrap">
+      <video id="video" autoplay playsinline></video>
+      <canvas id="overlay"></canvas>
+    </div>
+
+    <div class="controls">
+      <button id="flipBtn">Flip Camera</button>
+      <button id="scanBtn">Scan Now</button>
+      <button id="speakBtn">Speak Findings</button>
+      <div style="flex:1"></div>
+      <div class="muted">Tip: hold still for 1–2s & use good lighting.</div>
+    </div>
+
+    <div class="metricGrid">
+      <div class="metric">Status: <strong id="status">Waiting for face...</strong></div>
+      <div class="metric">Blink rate / min: <strong id="blinkRate">—</strong></div>
+      <div class="metric">Avg EAR: <strong id="ear">—</strong></div>
+
+      <div class="metric">Under-eye darkness: <strong id="darkScore">—</strong></div>
+      <div class="metric">Skin brightness: <strong id="skinBright">—</strong></div>
+      <div class="metric">Lip saturation: <strong id="lipSat">—</strong></div>
+
+      <div class="metric">Face redness score: <strong id="redScore">—</strong></div>
+      <div class="metric">Confidence: <strong id="conf">—</strong></div>
+      <div class="metric muted" id="findingsShort">No scan yet.</div>
+    </div>
+
+    <div style="height:10px"></div>
+    <div class="muted" id="suggestionsBlock">Press <strong>Scan Now</strong> to get enriched suggestions (mock assistant by default).</div>
+
+    <footer>
+      <div class="muted"><strong>Disclaimer:</strong> For demonstration only. Not a medical device. If concerned, use a thermometer and consult a doctor.</div>
+    </footer>
   </div>
 
+<!-- MediaPipe -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+
 <script>
-  // Toggle mock vs real (persist in localStorage)
-  const MOCK_KEY = 'USE_MOCK_DEMO';
-  function setMock(v){ localStorage.setItem(MOCK_KEY, v ? '1' : '0'); document.getElementById('mockState').innerText = v ? 'ON' : 'OFF'; }
-  document.getElementById('toggleMock').addEventListener('click', ()=> {
-    const cur = localStorage.getItem(MOCK_KEY) !== '0';
-    setMock(!cur);
-    alert('Mock mode is now: ' + (!cur ? 'ON' : 'OFF') + '\nWhen using real backend, ensure /api/analyze is available and env vars set.');
+(async ()=>{
+
+  // ---------- USER CONFIG ----------
+  // Default: mock assistant (no backend). Use localStorage('USE_MOCK_DEMO') to switch.
+  const USE_MOCK = (localStorage.getItem('USE_MOCK_DEMO') !== '0');
+
+  // Visual vertical shift for mesh drawing (normalized units). Positive = lines moved UP.
+  // Increase slightly if you want mesh more upward. 0.02 is subtle.
+  const DRAW_Y_SHIFT = 0.02;
+
+  // ---------- UI elements ----------
+  const video = document.getElementById('video');
+  const canvas = document.getElementById('overlay');
+  const ctx = canvas.getContext('2d');
+  const flipBtn = document.getElementById('flipBtn');
+  const scanBtn = document.getElementById('scanBtn');
+  const speakBtn = document.getElementById('speakBtn');
+
+  const statusEl = document.getElementById('status');
+  const confEl = document.getElementById('conf');
+  const blinkRateEl = document.getElementById('blinkRate');
+  const earEl = document.getElementById('ear');
+  const darkEl = document.getElementById('darkScore');
+  const skinEl = document.getElementById('skinBright');
+  const lipEl = document.getElementById('lipSat');
+  const redEl = document.getElementById('redScore');
+  const findingsShort = document.getElementById('findingsShort');
+  const suggestionsBlock = document.getElementById('suggestionsBlock');
+
+  // ---------- helpers ----------
+  function pdist(a,b){ const dx=(a.x-b.x)*canvas.width, dy=(a.y-b.y)*canvas.height; return Math.sqrt(dx*dx + dy*dy); }
+  function toPixel(lm){ return { x: lm.x * canvas.width, y: lm.y * canvas.height }; }
+
+  // EAR indices (MediaPipe face mesh landmarks chosen as heuristic)
+  const LEFT_EYE = [33,160,158,133,153,144];
+  const RIGHT_EYE = [362,385,387,263,373,380];
+
+  function computeEAR(landmarks, idxs){
+    const p1 = toPixel(landmarks[idxs[0]]);
+    const p2 = toPixel(landmarks[idxs[1]]);
+    const p3 = toPixel(landmarks[idxs[2]]);
+    const p4 = toPixel(landmarks[idxs[3]]);
+    const p5 = toPixel(landmarks[idxs[4]]);
+    const p6 = toPixel(landmarks[idxs[5]]);
+    const A = Math.hypot(p2.x-p6.x, p2.y-p6.y);
+    const B = Math.hypot(p3.x-p5.x, p3.y-p5.y);
+    const C = Math.hypot(p1.x-p4.x, p1.y-p4.y);
+    if(C === 0) return 0;
+    return (A + B) / (2.0 * C);
+  }
+
+  function sampleRegion(x,y,w,h){
+    try{
+      x = Math.max(0, Math.floor(x)); y = Math.max(0, Math.floor(y));
+      w = Math.max(1, Math.floor(w)); h = Math.max(1, Math.floor(h));
+      const img = ctx.getImageData(x,y,w,h).data;
+      let r=0,g=0,b=0;
+      for(let i=0;i<img.length;i+=4){ r+=img[i]; g+=img[i+1]; b+=img[i+2]; }
+      const px = img.length/4 || 1;
+      r/=px; g/=px; b/=px;
+      const lum = 0.299*r + 0.587*g + 0.114*b;
+      const max = Math.max(r,g,b), min = Math.min(r,g,b);
+      const sat = max === 0 ? 0 : ((max - min)/max) * 100;
+      return { r,g,b,lum,sat };
+    }catch(e){
+      return { r:0,g:0,b:0,lum:0,sat:0 };
+    }
+  }
+
+  // ---------- blink tracking ----------
+  let blinkHistory = []; // timestamps
+  let eyeClosedState = false;
+  let eyeClosedStart = 0;
+
+  // ---------- speech helper ----------
+  function speak(text){
+    if(!('speechSynthesis' in window)) return;
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = 'en-IN';
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(u);
+  }
+
+  // ---------- assistant (mock or real) ----------
+  async function mockAssistant(findingsText, numericScores){
+    // create a slightly adaptive mock reply
+    const blink = numericScores.blinkRate || 18;
+    const dark = numericScores.darkScore || 3;
+    const summary = (dark > 10) ? 'Visual scan shows under-eye darkness and possible fatigue.' : 'Visual scan shows mild signs of fatigue or dryness.';
+    const suggestions = [
+      'Drink 1–2 glasses of water now.',
+      'Take a 15–20 minute rest away from screens.',
+      'Apply a cool compress under the eyes if puffy.'
+    ];
+    return { status:'ok', data:{ summary, suggestions, disclaimer:'Demo only — not medical advice.', action:'If concerned, check temperature with a thermometer and consult a doctor.' } };
+  }
+
+  async function sendToServer(findingsText, numericScores, thumbnailBase64){
+    // Hook up to your serverless / backend / Vercel function
+    try{
+      const resp = await fetch('/api/analyze', {
+        method:'POST',
+        headers:{ 'Content-Type':'application/json' },
+        body: JSON.stringify({ findingsText, numericScores, thumbnail64: thumbnailBase64 })
+      });
+      return await resp.json();
+    }catch(e){
+      console.error('sendToServer error', e);
+      return { status:'error', message: e.message || String(e) };
+    }
+  }
+
+  async function getAssistant(findingsText, numericScores, thumbnail){
+    if(USE_MOCK) return mockAssistant(findingsText, numericScores);
+    return await sendToServer(findingsText, numericScores, thumbnail);
+  }
+
+  // ---------- MediaPipe FaceMesh setup ----------
+  const faceMesh = new FaceMesh({ locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${f}` });
+  faceMesh.setOptions({
+    maxNumFaces: 1,
+    refineLandmarks: true,
+    minDetectionConfidence: 0.6,
+    minTrackingConfidence: 0.6
   });
-  // initialize default true (mock)
-  if(localStorage.getItem(MOCK_KEY) === null) setMock(true);
-  else setMock(localStorage.getItem(MOCK_KEY) !== '0');
+
+  let lastFindingsText = '';
+  let lastNumericScores = {};
+
+  faceMesh.onResults((results) => {
+    // set canvas size to video size
+    if(video.videoWidth && video.videoHeight){
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+    }
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+
+    if(!results.multiFaceLandmarks || results.multiFaceLandmarks.length === 0){
+      statusEl.textContent = 'No face detected';
+      confEl.textContent = '—';
+      return;
+    }
+
+    const landmarks = results.multiFaceLandmarks[0]; // normalized
+
+    // DRAW SHIFTED MESH: create a copy of landmarks with Y shifted upward by DRAW_Y_SHIFT
+    const shifted = landmarks.map(p => ({ x: p.x, y: Math.max(0, p.y - DRAW_Y_SHIFT), z: p.z }));
+
+    // draw the shifted connectors & landmarks (visual only)
+    drawConnectors(ctx, shifted, FACEMESH_TESSELATION, { color: '#3ecaff', lineWidth: 1 });
+    drawConnectors(ctx, shifted, FACEMESH_RIGHT_EYE, { color: '#b8fff6', lineWidth: 1.5 });
+    drawConnectors(ctx, shifted, FACEMESH_LEFT_EYE, { color: '#b8fff6', lineWidth: 1.5 });
+    drawLandmarks(ctx, shifted, { color: '#b8fff6', lineWidth: 0.7 });
+
+    // Visual bounding rect (original landmarks)
+    let minX=1,minY=1,maxX=0,maxY=0;
+    for(const p of landmarks){
+      minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
+      maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y);
+    }
+    const bbox = {
+      x: Math.floor(minX * canvas.width),
+      y: Math.floor(minY * canvas.height),
+      w: Math.floor((maxX - minX) * canvas.width),
+      h: Math.floor((maxY - minY) * canvas.height)
+    };
+    // draw a subtle face box (optional)
+    ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(bbox.x, bbox.y, bbox.w, bbox.h);
+
+    // COMPUTE METRICS (use original landmarks)
+    const earL = computeEAR(landmarks, LEFT_EYE);
+    const earR = computeEAR(landmarks, RIGHT_EYE);
+    const earAvg = (earL + earR) / 2.0;
+    earEl.textContent = earAvg.toFixed(3);
+
+    // blink detection
+    const now = Date.now();
+    const isClosed = earAvg < 0.18;
+    if(isClosed && !eyeClosedState){ eyeClosedState = true; eyeClosedStart = now; }
+    else if(!isClosed && eyeClosedState){
+      const dur = now - eyeClosedStart;
+      if(dur > 80) {
+        blinkHistory.push(now);
+        // keep last 60s
+        blinkHistory = blinkHistory.filter(t => (now - t) <= 60000);
+      }
+      eyeClosedState = false;
+      eyeClosedStart = 0;
+    }
+    const blinkRate = blinkHistory.length; // approximate per minute
+    blinkRateEl.textContent = blinkRate;
+
+    // sample face center (for brightness) and under-eye regions for darkness
+    const faceCenterX = bbox.x + bbox.w * 0.5;
+    const faceCenterY = bbox.y + bbox.h * 0.45;
+    const faceRefW = Math.max(16, Math.round(bbox.w * 0.22));
+    const faceRefH = Math.max(12, Math.round(bbox.h * 0.12));
+    const faceRef = sampleRegion(faceCenterX - faceRefW/2, faceCenterY - faceRefH/2, faceRefW, faceRefH);
+    skinEl.textContent = Math.round(faceRef.lum);
+
+    // Under-eye rectangles (use original landmarks positions)
+    function getEyeBounds(idxs){
+      let minx=Infinity,miny=Infinity,maxx=-Infinity,maxy=-Infinity;
+      for(const i of idxs){
+        const p = toPixel(landmarks[i]);
+        minx = Math.min(minx, p.x); miny = Math.min(miny, p.y);
+        maxx = Math.max(maxx, p.x); maxy = Math.max(maxy, p.y);
+      }
+      return { minx, miny, maxx, maxy, w: maxx - minx, h: maxy - miny };
+    }
+    const lb = getEyeBounds(LEFT_EYE);
+    const rb = getEyeBounds(RIGHT_EYE);
+
+    const leftUnderX = Math.max(0, lb.minx - lb.w*0.12);
+    const leftUnderY = Math.min(canvas.height-1, lb.maxy + 3);
+    const leftUnderW = Math.max(6, lb.w * 1.2);
+    const leftUnderH = Math.max(6, lb.h * 0.9);
+
+    const rightUnderX = Math.max(0, rb.minx - rb.w*0.12);
+    const rightUnderY = Math.min(canvas.height-1, rb.maxy + 3);
+    const rightUnderW = Math.max(6, rb.w * 1.2);
+    const rightUnderH = Math.max(6, rb.h * 0.9);
+
+    const leftUnder = sampleRegion(leftUnderX, leftUnderY, leftUnderW, leftUnderH);
+    const rightUnder = sampleRegion(rightUnderX, rightUnderY, rightUnderW, rightUnderH);
+    const underAvgLum = (leftUnder.lum + rightUnder.lum) / 2.0;
+    const darkScore = Math.max(0, Math.round(faceRef.lum - underAvgLum));
+    darkEl.textContent = darkScore;
+
+    // mouth/lip region sample
+    const mouthX = bbox.x + bbox.w * 0.28;
+    const mouthY = bbox.y + bbox.h * 0.68;
+    const mouthW = Math.max(20, Math.round(bbox.w * 0.44));
+    const mouthH = Math.max(10, Math.round(bbox.h * 0.12));
+    const mouthSample = sampleRegion(mouthX, mouthY, mouthW, mouthH);
+    lipEl.textContent = Math.round(mouthSample.sat) + '%';
+
+    // redness (R - G)
+    const redScore = Math.round(faceRef.r - faceRef.g);
+    redEl.textContent = redScore;
+
+    confEl.textContent = 'High';
+
+    // Compose short findings
+    const findings = [];
+    if(earAvg < 0.18) findings.push('Eyes partly closed — possible drowsiness/fatigue');
+    if(blinkRate > 40) findings.push('High blink rate — possible stress or irritation');
+    if(darkScore > 10) findings.push('Under-eye darkness detected');
+    if(faceRef.lum < 85) findings.push('Skin appears dull (low brightness)');
+    if(mouthSample.sat < 18) findings.push('Lips look dry');
+
+    findingsShort.textContent = findings.length ? findings.join(' · ') : 'No strong visual issues detected';
+
+    // store for Scan
+    lastFindingsText = findingsShort.textContent;
+    lastNumericScores = { earAvg, blinkRate, darkScore, faceLum: faceRef.lum, lipSat: mouthSample.sat, redScore };
+
+    // draw debug rectangles lightly
+    ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(leftUnderX, leftUnderY, leftUnderW, leftUnderH);
+    ctx.strokeRect(rightUnderX, rightUnderY, rightUnderW, rightUnderH);
+    ctx.strokeStyle = 'rgba(255,200,120,0.06)';
+    ctx.strokeRect(mouthX, mouthY, mouthW, mouthH);
+  });
+
+  // ---------- camera start ----------
+  let facingMode = 'user';
+  let cam;
+  async function startCamera(){
+    if(cam){ cam.stop(); cam = null; }
+    try{
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode }, audio: false });
+      video.srcObject = stream;
+      await video.play();
+      cam = new Camera(video, { onFrame: async () => { await faceMesh.send({ image: video }); }, width: 640, height: 480 });
+      cam.start();
+    } catch(e){
+      console.error('Camera error', e);
+      statusEl.textContent = 'Camera denied or not available';
+    }
+  }
+
+  flipBtn.addEventListener('click', async () => {
+    facingMode = (facingMode === 'user') ? 'environment' : 'user';
+    await startCamera();
+  });
+
+  // capture thumbnail utility
+  function captureThumbnail(maxSize=128){
+    try{
+      const w = video.videoWidth, h = video.videoHeight;
+      if(!w || !h) return null;
+      const scale = Math.min(1, maxSize / Math.max(w, h));
+      const cw = Math.round(w * scale), ch = Math.round(h * scale);
+      const c = document.createElement('canvas'); c.width = cw; c.height = ch;
+      const cctx = c.getContext('2d');
+      cctx.drawImage(video, 0, 0, cw, ch);
+      return c.toDataURL('image/jpeg', 0.7);
+    }catch(e){
+      return null;
+    }
+  }
+
+  scanBtn.addEventListener('click', async ()=>{
+    if(!lastFindingsText) return alert('No readings yet — ensure face is visible and try again.');
+    const thumb = captureThumbnail(128);
+    suggestionsBlock.textContent = 'Contacting assistant...';
+    const assistant = await getAssistant(lastFindingsText, lastNumericScores, thumb);
+    const data = assistant?.data || assistant;
+    if(data.summary) {
+      suggestionsBlock.innerHTML = `<strong>Summary:</strong> ${data.summary}<br/><strong>Suggestions:</strong><ul>${(data.suggestions||[]).map(s=>`<li>${s}</li>`).join('')}</ul>`;
+    } else {
+      suggestionsBlock.innerText = JSON.stringify(data);
+    }
+  });
+
+  speakBtn.addEventListener('click', ()=>{
+    const txt = suggestionsBlock.innerText || findingsShort.innerText;
+    if(!txt) return;
+    speak(txt);
+  });
+
+  // init
+  await startCamera();
+
+  // expose for debugging
+  window._faceMesh = faceMesh;
+  window._cam = cam;
+
+})();
 </script>
 </body>
 </html>
