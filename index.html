@@ -1,419 +1,47 @@
 <!doctype html>
 <html>
 <head>
-<meta charset="utf-8" />
-<title>Face Health Scanner — Demo (Local)</title>
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<style>
-  :root{--bg:#081025;--card:#071126;--accent:#40c4ff;--muted:#9fb2c3;}
-  body{margin:0;font-family:system-ui,Roboto,Segoe UI,Arial;background:var(--bg);color:#e6f4ff;display:flex;gap:18px;padding:18px;box-sizing:border-box;}
-  .left{width:640px;max-width:64vw;}
-  .right{flex:1;min-width:300px;}
-  .card{background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(0,0,0,0.06));padding:12px;border-radius:12px;box-shadow:0 8px 40px rgba(0,0,0,0.6);}
-  #videoWrap{position:relative;border-radius:12px;overflow:hidden;background:#000;margin-bottom:12px;}
-  video{width:100%;height:auto;display:block;}
-  canvas{position:absolute;left:0;top:0;pointer-events:none;}
-  .controls{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;}
-  button{background:var(--accent);border:none;padding:8px 10px;border-radius:8px;color:#032a3b;cursor:pointer;font-weight:700;}
-  .muted{color:var(--muted);font-size:13px;}
-  .result{padding:10px;border-radius:10px;background:rgba(255,255,255,0.02);margin-bottom:10px;}
-  .row{display:flex;gap:8px;align-items:center;}
-  .metric{padding:8px;border-radius:8px;background:rgba(255,255,255,0.03);flex:1;}
-  footer{font-size:12px;color:var(--muted);margin-top:12px;}
-  .danger{color:#ffb4a2;}
-</style>
+  <meta charset="utf-8" />
+  <title>Smart Demo — Hand & Face Health</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body{font-family:Arial,Helvetica,sans-serif;background:#071025;color:#e8f7ff;padding:18px;}
+    .card{background:#081430;border-radius:12px;padding:16px;margin-bottom:12px;box-shadow:0 6px 24px rgba(0,0,0,0.5);}
+    .big{font-size:18px;font-weight:700;}
+    button{background:#06b6d4;color:#012;padding:10px 12px;border:none;border-radius:8px;cursor:pointer;}
+    a{color:#aeefff}
+  </style>
 </head>
 <body>
-  <div class="left card">
-    <div id="videoWrap">
-      <video id="video" autoplay playsinline></video>
-      <canvas id="overlay"></canvas>
-    </div>
-
-    <div class="controls">
-      <button id="flipBtn">Flip Camera</button>
-      <button id="scanBtn">Scan Now</button>
-      <button id="speakBtn">Speak Findings</button>
-      <div style="flex:1"></div>
-      <div class="muted">Tip: good lighting and still face give better results.</div>
-    </div>
-
-    <div class="result">
-      <div class="row">
-        <div class="metric">Status: <strong id="status">Waiting for face...</strong></div>
-        <div class="metric">Confidence: <span id="conf">—</span></div>
-      </div>
-      <div style="height:8px"></div>
-      <div class="row">
-        <div class="metric">Blink rate (per min): <strong id="blinkRate">—</strong></div>
-        <div class="metric">Avg EAR: <strong id="ear">—</strong></div>
-      </div>
-      <div style="height:8px"></div>
-      <div class="row">
-        <div class="metric">Under-eye darkness: <strong id="darkScore">—</strong></div>
-        <div class="metric">Skin brightness: <strong id="skinBright">—</strong></div>
-      </div>
-      <div style="height:8px"></div>
-      <div class="row">
-        <div class="metric">Lip dryness (sat): <strong id="lipSat">—</strong></div>
-        <div class="metric">Face redness: <strong id="redScore">—</strong></div>
-      </div>
-    </div>
-
-    <div class="card" id="advice">
-      <h3 style="margin:6px 0">Findings & Suggestions</h3>
-      <div id="findings" class="muted">No scan yet.</div>
-      <div style="height:8px"></div>
-      <div id="suggestions" class="muted"></div>
-      <p style="margin-top:8px;font-size:12px;color:#ffd9c7"><strong>Important:</strong> This is an experimental visual-only tool — <em>not</em> a medical diagnosis. For fever or medical concerns, use a thermometer and consult a doctor.</p>
-    </div>
+  <div class="card">
+    <div class="big">Smart Gloves & Face Health Demo</div>
+    <p>Runs locally in the browser. Use the demos below. For Gemini enrichment the serverless backend is required.</p>
+    <p>
+      <button id="toggleMock">Toggle Mock Mode</button>
+      <span style="margin-left:12px">Mock mode: <strong id="mockState">ON</strong></span>
+    </p>
+    <p>
+      <a href="./gesture_demo.html" target="_blank">Open Gesture demo →</a>
+      &nbsp;&nbsp;|&nbsp;&nbsp;
+      <a href="./face_health_demo.html" target="_blank">Open Face Health demo →</a>
+    </p>
+    <p style="font-size:13px;color:#9fb2c3">
+      Demo mode is mock by default (no API key). When you deploy server and set environment variables, switch this to REAL to call your backend.
+    </p>
   </div>
-
-  <div class="right card">
-    <h3 style="margin-top:0">Settings & Notes</h3>
-    <div class="muted">
-      This demo uses <strong>MediaPipe FaceMesh</strong> to detect facial landmarks and compute simple heuristics:
-      <ul>
-        <li><strong>EAR</strong> (eye aspect ratio) → eye openness / fatigue detection</li>
-        <li><strong>Blink rate</strong> → stress or fatigue proxy</li>
-        <li><strong>Under-eye darkness</strong> → dark circles</li>
-        <li><strong>Skin brightness & lip saturation</strong> → dull skin / dry lips (dehydration proxy)</li>
-        <li><strong>Face redness</strong> → very rough proxy for flushing (NOT a thermometer)</li>
-      </ul>
-    </div>
-    <div style="height:8px"></div>
-    <div class="muted">
-      <strong>Calibration tips:</strong> Good lighting, neutral background, and holding still for ~2 seconds produces better readings.
-    </div>
-    <footer>
-      Project: Face Health Scanner — For educational/demo use only. Runs locally. Do not use for medical decisions.
-    </footer>
-  </div>
-
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
 
 <script>
-(async ()=>{
-
-  const video = document.getElementById('video');
-  const canvas = document.getElementById('overlay');
-  const ctx = canvas.getContext('2d');
-
-  const flipBtn = document.getElementById('flipBtn');
-  const scanBtn = document.getElementById('scanBtn');
-  const speakBtn = document.getElementById('speakBtn');
-
-  const statusEl = document.getElementById('status');
-  const confEl = document.getElementById('conf');
-  const blinkRateEl = document.getElementById('blinkRate');
-  const earEl = document.getElementById('ear');
-  const darkEl = document.getElementById('darkScore');
-  const skinEl = document.getElementById('skinBright');
-  const lipEl = document.getElementById('lipSat');
-  const redEl = document.getElementById('redScore');
-  const findingsEl = document.getElementById('findings');
-  const suggestionsEl = document.getElementById('suggestions');
-
-  let facingMode = 'user';
-  let cam;
-
-  // Eye indices for MediaPipe FaceMesh (commonly used)
-  const LEFT_EYE = [33, 160, 158, 133, 153, 144];
-  const RIGHT_EYE = [362, 385, 387, 263, 373, 380]; // mirrors of left
-  // helper: pixel distance
-  function pdist(a,b){ const dx=a.x-b.x, dy=a.y-b.y; return Math.sqrt(dx*dx + dy*dy); }
-
-  // convert normalized landmark to pixel
-  function toPixel(lm){
-    return { x: lm.x * canvas.width, y: lm.y * canvas.height };
-  }
-
-  // compute EAR given 6 indices (MediaPipe ordering may differ, chosen heuristics)
-  function computeEAR(landmarks, idxs){
-    const p1 = toPixel(landmarks[idxs[0]]);
-    const p2 = toPixel(landmarks[idxs[1]]);
-    const p3 = toPixel(landmarks[idxs[2]]);
-    const p4 = toPixel(landmarks[idxs[3]]);
-    const p5 = toPixel(landmarks[idxs[4]]);
-    const p6 = toPixel(landmarks[idxs[5]]);
-    const A = pdist(p2,p6); // vertical
-    const B = pdist(p3,p5); // vertical
-    const C = pdist(p1,p4); // horizontal
-    if (C === 0) return 0;
-    return (A + B) / (2.0 * C);
-  }
-
-  // frame->image data sample region
-  function sampleRegion(x,y,w,h){
-    x = Math.max(0, Math.floor(x)); y = Math.max(0, Math.floor(y));
-    w = Math.max(1, Math.floor(w)); h = Math.max(1, Math.floor(h));
-    try {
-      const img = ctx.getImageData(x,y,w,h).data;
-      // compute average R,G,B and saturation-like measure
-      let r=0,g=0,b=0;
-      for(let i=0;i<img.length;i+=4){ r+=img[i]; g+=img[i+1]; b+=img[i+2]; }
-      const px = img.length/4 || 1;
-      r/=px; g/=px; b/=px;
-      // luminance
-      const lum = 0.299*r + 0.587*g + 0.114*b;
-      // approximate saturation: convert to HSV roughly
-      const max = Math.max(r,g,b), min = Math.min(r,g,b);
-      const sat = (max === 0) ? 0 : ((max - min)/max) * 100; // percent
-      return { r, g, b, lum, sat };
-    } catch(e){
-      return { r:0,g:0,b:0,lum:0,sat:0 };
-    }
-  }
-
-  // utility: face bounding box from landmarks array
-  function faceBBox(landmarks){
-    let minX=1,minY=1,maxX=0,maxY=0;
-    for(const p of landmarks){
-      minX = Math.min(minX, p.x);
-      minY = Math.min(minY, p.y);
-      maxX = Math.max(maxX, p.x);
-      maxY = Math.max(maxY, p.y);
-    }
-    // convert to pixels
-    return {
-      x: Math.floor(minX * canvas.width),
-      y: Math.floor(minY * canvas.height),
-      w: Math.floor((maxX - minX) * canvas.width),
-      h: Math.floor((maxY - minY) * canvas.height)
-    };
-  }
-
-  // time-based blink counting
-  let blinkHistory = []; // timestamps of detected closures
-  let eyeClosedState = false;
-  let eyeClosedStart = 0;
-
-  // speak function
-  function speak(text){
-    if(!('speechSynthesis' in window)) return;
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = 'en-IN';
-    window.speechSynthesis.cancel();
-    window.speechSynthesis.speak(u);
-  }
-
-  // Classifier heuristics & thresholds
-  const EAR_CLOSED = 0.20; // lower => eye closed
-  const DARKNESS_THRESHOLD = 10; // difference in luminance (face_mean - under_eye_lum)
-  const SKIN_BRIGHT_LOW = 85; // luminance threshold (0-255)
-  const LIP_SAT_LOW = 18; // saturation percent low => dry lips
-  const REDNESS_THRESHOLD = 8; // (R - G) value average (pixels)
-
-  // FaceMesh setup
-  const faceMesh = new FaceMesh({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}` });
-  faceMesh.setOptions({
-    maxNumFaces: 1,
-    refineLandmarks: true,
-    minDetectionConfidence: 0.6,
-    minTrackingConfidence: 0.6
+  // Toggle mock vs real (persist in localStorage)
+  const MOCK_KEY = 'USE_MOCK_DEMO';
+  function setMock(v){ localStorage.setItem(MOCK_KEY, v ? '1' : '0'); document.getElementById('mockState').innerText = v ? 'ON' : 'OFF'; }
+  document.getElementById('toggleMock').addEventListener('click', ()=> {
+    const cur = localStorage.getItem(MOCK_KEY) !== '0';
+    setMock(!cur);
+    alert('Mock mode is now: ' + (!cur ? 'ON' : 'OFF') + '\nWhen using real backend, ensure /api/analyze is available and env vars set.');
   });
-
-  faceMesh.onResults((results) => {
-    // canvas sizing
-    if(video.videoWidth && video.videoHeight){
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-    }
-    ctx.clearRect(0,0,canvas.width,canvas.height);
-
-    if(!results.multiFaceLandmarks || results.multiFaceLandmarks.length === 0){
-      statusEl.textContent = 'No face detected';
-      confEl.textContent = '—';
-      return;
-    }
-
-    const landmarks = results.multiFaceLandmarks[0]; // normalized points
-    // draw mesh for visualization
-    drawConnectors(ctx, landmarks, FACEMESH_TESSELATION, {color:'#7ee7ff', lineWidth:1});
-    drawConnectors(ctx, landmarks, FACEMESH_RIGHT_EYE, {color:'#a6fff2', lineWidth:2});
-    drawConnectors(ctx, landmarks, FACEMESH_LEFT_EYE, {color:'#a6fff2', lineWidth:2});
-    drawLandmarks(ctx, landmarks, {color:'#7ee7ff', lineWidth:1});
-
-    statusEl.textContent = 'Face detected';
-    confEl.textContent = Math.round((results.faceLandmarks ? 1.0 : 0.8) * 100) + '%';
-
-    // compute bounding box
-    const bbox = faceBBox(landmarks);
-
-    // compute EAR left & right
-    const earL = computeEAR(landmarks, LEFT_EYE);
-    const earR = computeEAR(landmarks, RIGHT_EYE);
-    const earAvg = (earL + earR) / 2.0;
-    earEl.textContent = earAvg.toFixed(3);
-
-    // Blink detection: treat eye closed when EAR < EAR_CLOSED
-    const now = Date.now();
-    const isClosed = earAvg < EAR_CLOSED;
-    if(isClosed && !eyeClosedState){
-      // newly closed
-      eyeClosedState = true;
-      eyeClosedStart = now;
-    } else if(!isClosed && eyeClosedState){
-      // opened — record blink if duration > 80ms
-      const duration = now - eyeClosedStart;
-      if(duration > 80){
-        blinkHistory.push(now);
-        // keep last 60 seconds only
-        blinkHistory = blinkHistory.filter(t => (now - t) <= 60000);
-      }
-      eyeClosedState = false;
-      eyeClosedStart = 0;
-    }
-    const blinkRate = Math.round((blinkHistory.length) * (60 / 1)); // blinks per minute approximation (using last 60s)
-    blinkRateEl.textContent = blinkRate;
-
-    // sample under-eye region: find average y of eye landmarks and take rectangle below eye
-    // left eye pixel coords
-    const leftCoords = LEFT_EYE.map(i => toPixel(landmarks[i]));
-    const rightCoords = RIGHT_EYE.map(i => toPixel(landmarks[i]));
-    // compute bounding rects
-    function bounds(points){
-      let minx=Infinity,miny=Infinity,maxx=-Infinity,maxy=-Infinity;
-      for(const p of points){ minx=Math.min(minx,p.x); miny=Math.min(miny,p.y); maxx=Math.max(maxx,p.x); maxy=Math.max(maxy,p.y); }
-      return {minx,miny,maxx,maxy};
-    }
-    const lb = bounds(leftCoords);
-    const rb = bounds(rightCoords);
-
-    // under-eye rectangles: from bottom of eye box downwards by 0.9 * eye height
-    const leftEyeW = Math.max(4, lb.maxx - lb.minx);
-    const leftEyeH = Math.max(4, lb.maxy - lb.miny);
-    const r1x = lb.minx - leftEyeW*0.15;
-    const r1y = lb.maxy + 2;
-    const r1w = leftEyeW * 1.3;
-    const r1h = Math.max(6, leftEyeH * 0.9);
-
-    const rightEyeW = Math.max(4, rb.maxx - rb.minx);
-    const rightEyeH = Math.max(4, rb.maxy - rb.miny);
-    const r2x = rb.minx - rightEyeW*0.15;
-    const r2y = rb.maxy + 2;
-    const r2w = rightEyeW * 1.3;
-    const r2h = Math.max(6, rightEyeH * 0.9);
-
-    // face central region for reference brightness (center of bbox)
-    const centerX = bbox.x + bbox.w * 0.5;
-    const centerY = bbox.y + bbox.h * 0.45;
-    const faceRefW = Math.max(20, bbox.w * 0.25);
-    const faceRefH = Math.max(20, bbox.h * 0.18);
-    const faceRef = sampleRegion(centerX - faceRefW/2, centerY - faceRefH/2, faceRefW, faceRefH);
-
-    // sample under-eye regions (left and right) and mouth region for lip sat
-    const leftUnder = sampleRegion(r1x, r1y, r1w, r1h);
-    const rightUnder = sampleRegion(r2x, r2y, r2w, r2h);
-    const underAvgLum = (leftUnder.lum + rightUnder.lum) / 2.0;
-    const darkScore = Math.max(0, Math.round(faceRef.lum - underAvgLum)); // higher => under-eye darker
-    darkEl.textContent = darkScore;
-
-    // skin brightness
-    skinEl.textContent = Math.round(faceRef.lum);
-
-    // mouth/lip region: use lower 20% of bbox
-    const mouthX = bbox.x + bbox.w*0.25;
-    const mouthY = bbox.y + bbox.h*0.68;
-    const mouthW = Math.max(20, bbox.w * 0.5);
-    const mouthH = Math.max(10, bbox.h * 0.12);
-    const mouthSample = sampleRegion(mouthX, mouthY, mouthW, mouthH);
-    lipEl.textContent = Math.round(mouthSample.sat) + '%';
-
-    // redness: R - G (face ref)
-    const redScore = Math.round(faceRef.r - faceRef.g);
-    redEl.textContent = redScore;
-
-    // Draw helper rectangles for debugging (under-eye and mouth)
-    ctx.strokeStyle = '#90f0ff';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(r1x, r1y, r1w, r1h);
-    ctx.strokeRect(r2x, r2y, r2w, r2h);
-    ctx.strokeStyle = '#ffd18a';
-    ctx.strokeRect(mouthX, mouthY, mouthW, mouthH);
-
-    // Compose findings using heuristics
-    const findings = [];
-    const remedies = [];
-
-    // fatigue / sleepiness detection
-    if(earAvg < 0.18){
-      findings.push('Eyes appear droopy / partially closed — possible drowsiness or fatigue');
-      remedies.push('Take a short rest (15–30 min), avoid driving, drink water, get 7–8 hours sleep tonight.');
-    } else if(blinkRate > 40){
-      findings.push('High blink rate — possible stress, eye irritation or tiredness');
-      remedies.push('Take screen breaks (20-20-20 rule), blink deliberately, use eye drops if irritated.');
-    } else {
-      findings.push('No strong signs of eye fatigue detected');
-    }
-
-    // dark circles
-    if(darkScore > DARKNESS_THRESHOLD){
-      findings.push('Under-eye region appears darker than cheeks — possible dark circles / tiredness');
-      remedies.push('Sleep well, cold compresses, hydration, vitamin-rich diet (iron/vitamin K).');
-    }
-
-    // skin brightness => dehydration proxy
-    if(faceRef.lum < SKIN_BRIGHT_LOW){
-      findings.push('Skin appears dull (low brightness) — possible dehydration or poor lighting');
-      remedies.push('Drink 1–2 glasses of water, ensure good rest, improve lighting for test accuracy.');
-    }
-
-    // lip dryness
-    if(mouthSample.sat < LIP_SAT_LOW){
-      findings.push('Low lip saturation — lips may be dry (possible dehydration)');
-      remedies.push('Drink water, apply lip balm. If persistent, consult health professional.');
-    }
-
-    // redness (fever proxy) — **very unreliable**
-    if(redScore > REDNESS_THRESHOLD){
-      findings.push('Face shows increased redness compared to green channel — could be flushing (unreliable proxy for fever).');
-      remedies.push('Use a thermometer to check body temperature. If high, consult a doctor.');
-    }
-
-    // final suggestions
-    findingsEl.innerHTML = findings.map((f,i)=>`<div>• ${f}</div>`).join('');
-    suggestionsEl.innerHTML = '<strong>Suggested home steps:</strong><ul>' + remedies.map(r=>`<li>${r}</li>`).join('') + '</ul>';
-
-    // store last computed phrase for speaking
-    lastFindingsText = findings.map(f=>'• ' + f).join('. ') + '. ' + remedies.slice(0,3).join('. ');
-  });
-
-  let lastFindingsText = '';
-
-  // Start camera & mediapipe camera util
-  async function startCamera(){
-    if(cam){ cam.stop(); cam=null; }
-    const stream = await navigator.mediaDevices.getUserMedia({ video: {width:640, height:480, facingMode}, audio: false });
-    video.srcObject = stream;
-    await video.play();
-    cam = new Camera(video, { onFrame: async () => { await faceMesh.send({image: video}); }, width:640, height:480 });
-    cam.start();
-  }
-
-  flipBtn.addEventListener('click', async ()=>{
-    facingMode = (facingMode === 'user') ? 'environment' : 'user';
-    await startCamera();
-  });
-
-  scanBtn.addEventListener('click', ()=>{
-    // small visual flash to indicate scan triggered
-    statusEl.textContent = 'Scanning... hold still for 2 sec';
-    setTimeout(()=>{ statusEl.textContent = 'Scanning done — see findings'; }, 1600);
-  });
-
-  speakBtn.addEventListener('click', ()=>{ if(lastFindingsText) speak(lastFindingsText); });
-
-  // init
-  await startCamera();
-
-  // expose objects for debugging
-  window._faceMesh = faceMesh;
-  window._cam = cam;
-
-})();
+  // initialize default true (mock)
+  if(localStorage.getItem(MOCK_KEY) === null) setMock(true);
+  else setMock(localStorage.getItem(MOCK_KEY) !== '0');
 </script>
 </body>
 </html>
