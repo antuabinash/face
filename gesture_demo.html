@@ -1,0 +1,110 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"/><title>Gesture → Speech Demo</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  body{font-family:Arial;background:#081025;color:#e8f7ff;padding:12px;}
+  .card{background:#071126;padding:12px;border-radius:10px;}
+  video{width:100%;max-width:640px;border-radius:8px;}
+  #controls{margin-top:8px;}
+  button{background:#06b6d4;color:#012;padding:8px;border-radius:8px;border:none;cursor:pointer;}
+</style>
+</head>
+<body>
+  <div class="card">
+    <h2>Gesture → Speech (MediaPipe Hands)</h2>
+    <div id="videoWrap">
+      <video id="video" autoplay playsinline></video>
+      <canvas id="overlay" style="position:absolute;left:0;top:0;pointer-events:none"></canvas>
+    </div>
+    <div id="controls">
+      <button id="flipBtn">Flip Camera</button>
+      <button id="speakNow">Speak Now (current)</button>
+    </div>
+    <div style="margin-top:10px">
+      Detected: <span id="detected">—</span> | Phrase: <span id="phrase">—</span> | Conf: <span id="conf">—</span>
+    </div>
+    <p style="font-size:13px;color:#9fb2c3">Tip: For exhibition, allow good lighting and keep hand steady for 0.5s.</p>
+  </div>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+<script>
+(async ()=>{
+  const USE_MOCK = (localStorage.getItem('USE_MOCK_DEMO') !== '0');
+  function mockAssistant(findingsText, numericScores){
+    return Promise.resolve({
+      status:'ok',
+      data:{
+        summary:'Demo: mild hand gesture detected.',
+        suggestions:['Practice gestures slowly', 'Keep palm visible', 'Good lighting helps'],
+        disclaimer:'Demo only.',
+        action:'No action needed.'
+      }
+    });
+  }
+  async function sendToServer(findingsText, numericScores){
+    try{
+      const resp = await fetch('/api/analyze', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ findingsText, numericScores }) });
+      return await resp.json();
+    }catch(e){
+      console.error(e); return { status:'error', message: e.message };
+    }
+  }
+  async function getAssistant(findingsText, numericScores){
+    if(USE_MOCK) return mockAssistant(findingsText, numericScores);
+    return await sendToServer(findingsText, numericScores);
+  }
+
+  // minimal MediaPipe hands integration (use code from the earlier full demo)
+  // For speed, we'll implement a simple version that detects open palm vs fist and triggers speech.
+  const video = document.getElementById('video'), overlay = document.getElementById('overlay'), ctx = overlay.getContext('2d');
+  let facingMode='user', cam;
+  const hands = new Hands({ locateFile: (f)=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}` });
+  hands.setOptions({ maxNumHands:1, modelComplexity:1, minDetectionConfidence:0.6, minTrackingConfidence:0.6 });
+  hands.onResults((results)=> {
+    if(video.videoWidth){ overlay.width = video.videoWidth; overlay.height = video.videoHeight; }
+    ctx.clearRect(0,0,overlay.width,overlay.height);
+    if(results.multiHandLandmarks && results.multiHandLandmarks.length){
+      const lm = results.multiHandLandmarks[0];
+      drawConnectors(ctx, lm, HAND_CONNECTIONS, {color:'#00e6e6', lineWidth:2});
+      drawLandmarks(ctx, lm, {color:'#00e6e6', lineWidth:1});
+      // quick finger logic: count fingers using tip.y < pip.y as earlier
+      const TIP = [4,8,12,16,20], PIP=[3,6,10,14,18];
+      let count=0;
+      for(let i=0;i<5;i++) if(lm[TIP[i]].y < lm[PIP[i]].y) count++;
+      let label='Unknown', phrase='—', conf=0.5;
+      if(count===5){ label='Open palm'; phrase='Hello'; conf=0.95; }
+      else if(count===0){ label='Fist'; phrase='Help'; conf=0.9; }
+      else { label='Count ' + count; phrase = String(count); conf=0.75; }
+      document.getElementById('detected').innerText = label;
+      document.getElementById('phrase').innerText = phrase;
+      document.getElementById('conf').innerText = Math.round(conf*100)+'%';
+      // speaking and assistant only on user action or once per new detection
+    } else {
+      document.getElementById('detected').innerText = 'No hand';
+      document.getElementById('phrase').innerText = '—';
+      document.getElementById('conf').innerText = '—';
+    }
+  });
+
+  async function startCamera(){
+    if(cam){ cam.stop(); cam=null; }
+    const stream = await navigator.mediaDevices.getUserMedia({ video:{width:640, height:480, facingMode}, audio:false });
+    video.srcObject = stream; await video.play();
+    cam = new Camera(video, { onFrame: async ()=> await hands.send({image: video}), width:640, height:480 });
+    cam.start();
+  }
+  document.getElementById('flipBtn').addEventListener('click', async ()=> { facingMode = (facingMode==='user'?'environment':'user'); await startCamera(); });
+  document.getElementById('speakNow').addEventListener('click', ()=> {
+    const phrase = document.getElementById('phrase').innerText;
+    if(!phrase || phrase==='—') return;
+    const u = new SpeechSynthesisUtterance(phrase); u.lang='en-IN'; window.speechSynthesis.cancel(); window.speechSynthesis.speak(u);
+  });
+
+  await startCamera();
+})();
+</script>
+</body>
+</html>
