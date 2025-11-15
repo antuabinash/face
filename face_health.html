@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8" />
-<title>Face Health Scanner — Demo</title>
+<title>Face Health Scanner — Gemini Demo</title>
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <style>
   :root{--bg:#061021;--card:#071226;--accent:#40c4ff;--muted:#98b6c6;}
@@ -18,15 +18,12 @@
   .metric{background:rgba(255,255,255,0.02);padding:8px;border-radius:8px;font-size:14px;}
   .muted{color:var(--muted);font-size:13px;}
   footer{font-size:12px;color:var(--muted);margin-top:10px;}
-  @media (max-width:600px){
-    .metricGrid{grid-template-columns:repeat(1,1fr);}
-  }
+  @media (max-width:600px){ .metricGrid{grid-template-columns:repeat(1,1fr);} }
 </style>
 </head>
 <body>
   <div class="wrap card">
-    <h2 style="margin:4px 0 8px 0">Face Health Scanner — Demo</h2>
-
+    <h2 style="margin:4px 0 8px 0">Face Health Scanner — Gemini demo</h2>
     <div id="videoWrap">
       <video id="video" autoplay playsinline></video>
       <canvas id="overlay"></canvas>
@@ -34,7 +31,7 @@
 
     <div class="controls">
       <button id="flipBtn">Flip Camera</button>
-      <button id="scanBtn">Scan Now</button>
+      <button id="scanBtn">Scan Now (Gemini)</button>
       <button id="speakBtn">Speak Findings</button>
       <div style="flex:1"></div>
       <div class="muted">Tip: hold still for 1–2s & use good lighting.</div>
@@ -55,14 +52,13 @@
     </div>
 
     <div style="height:10px"></div>
-    <div class="muted" id="suggestionsBlock">Press <strong>Scan Now</strong> to get suggestions.</div>
+    <div id="suggestionsBlock" class="muted">Press <strong>Scan Now</strong> to get Gemini suggestions.</div>
 
     <footer>
-      <div class="muted"><strong>Disclaimer:</strong> For demonstration only. Not a medical device.</div>
+      <div class="muted"><strong>Disclaimer:</strong> For demonstration only. Not a medical device. Data is sent to a server for analysis with user consent.</div>
     </footer>
   </div>
 
-<!-- MediaPipe -->
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
@@ -70,20 +66,16 @@
 <script>
 (async ()=>{
 
-  // Mesh shift upward (your request)
-  const DRAW_Y_SHIFT = 0.02;  
+  // Visual vertical shift for mesh drawing (positive moves mesh UP visually)
+  const DRAW_Y_SHIFT = 0.02;
 
-  const USE_MOCK = true; // keep true (no backend needed)
+  // Relative API path (works on Vercel). If your server is on another domain, change this to full URL.
+  const API_PATH = '/api/analyze';
 
+  // UI refs
   const video = document.getElementById('video');
   const canvas = document.getElementById('overlay');
   const ctx = canvas.getContext('2d');
-
-  let spanning=false;
-
-  function pdist(a,b){ const dx=(a.x-b.x)*canvas.width, dy=(a.y-b.y)*canvas.height; return Math.sqrt(dx*dx + dy*dy); }
-  function toPixel(lm){ return { x: lm.x * canvas.width, y: lm.y * canvas.height }; }
-
   const statusEl = document.getElementById('status');
   const confEl = document.getElementById('conf');
   const blinkEl = document.getElementById('blinkRate');
@@ -95,13 +87,18 @@
   const findingsShort = document.getElementById('findingsShort');
   const suggestionsBlock = document.getElementById('suggestionsBlock');
 
+  // metrics state
   let blinkHistory = [];
-  let eyeClosedState=false;
-  let eyeClosedStart=0;
+  let eyeClosedState = false;
+  let eyeClosedStart = 0;
+  let lastFindingsText = '';
+  let lastNumericScores = {};
 
+  // eye indices for EAR computation
   const LEFT_EYE = [33,160,158,133,153,144];
   const RIGHT_EYE = [362,385,387,263,373,380];
 
+  function toPixel(lm){ return { x: lm.x * canvas.width, y: lm.y * canvas.height }; }
   function computeEAR(landmarks, idxs){
     const p1 = toPixel(landmarks[idxs[0]]);
     const p2 = toPixel(landmarks[idxs[1]]);
@@ -120,176 +117,177 @@
     try{
       x = Math.max(0, Math.floor(x)); y = Math.max(0, Math.floor(y));
       w = Math.max(1, Math.floor(w)); h = Math.max(1, Math.floor(h));
-
       const img = ctx.getImageData(x,y,w,h).data;
       let r=0,g=0,b=0;
-      for(let i=0;i<img.length;i+=4){
-        r += img[i];
-        g += img[i+1];
-        b += img[i+2];
-      }
+      for(let i=0;i<img.length;i+=4){ r+=img[i]; g+=img[i+1]; b+=img[i+2]; }
       const px = img.length/4 || 1;
       r/=px; g/=px; b/=px;
       const lum = 0.299*r + 0.587*g + 0.114*b;
       const max = Math.max(r,g,b), min = Math.min(r,g,b);
       const sat = max ? ((max-min)/max)*100 : 0;
       return {r,g,b,lum,sat};
-    }catch(_){
-      return {r:0,g:0,b:0,lum:0,sat:0};
-    }
+    }catch(e){ return {r:0,g:0,b:0,lum:0,sat:0}; }
   }
 
-  // Speech
+  // speech helper
   function speak(text){
-    if(!("speechSynthesis" in window)) return;
+    if(!('speechSynthesis' in window)) return;
     const u = new SpeechSynthesisUtterance(text);
-    u.lang = "en-IN";
-    speechSynthesis.cancel();
-    speechSynthesis.speak(u);
+    u.lang = 'en-IN';
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(u);
   }
 
-  // Mock health assistant
-  async function mockAssistant(txt, scores){
-    return {
-      status:"ok",
-      data:{
-        summary:"Mild fatigue & low hydration signs detected.",
-        suggestions:[
-          "Drink 1–2 glasses of water now.",
-          "Rest away from screen for 10–15 min.",
-          "Apply cool water under the eyes."
-        ]
-      }
-    };
-  }
+  // face mesh
+  const faceMesh = new FaceMesh({ locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${f}` });
+  faceMesh.setOptions({ maxNumFaces:1, refineLandmarks:true, minDetectionConfidence:0.6, minTrackingConfidence:0.6 });
 
-  // FaceMesh
-  const faceMesh = new FaceMesh({
-    locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${f}`
-  });
-  faceMesh.setOptions({
-    maxNumFaces:1,
-    refineLandmarks:true,
-    minDetectionConfidence:0.6,
-    minTrackingConfidence:0.6
-  });
-
-  let lastText="", lastScores={};
-
-  faceMesh.onResults((results)=>{
-    if(video.videoWidth){
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-    }
+  faceMesh.onResults((results) => {
+    if(video.videoWidth){ canvas.width = video.videoWidth; canvas.height = video.videoHeight; }
     ctx.clearRect(0,0,canvas.width,canvas.height);
 
     if(!results.multiFaceLandmarks || !results.multiFaceLandmarks.length){
-      statusEl.textContent="No face";
+      statusEl.textContent = 'No face';
       return;
     }
 
     const lm = results.multiFaceLandmarks[0];
 
-    // Shift mesh Upwards
-    const shifted = lm.map(p => ({
-      x:p.x,
-      y:Math.max(0, p.y - DRAW_Y_SHIFT),
-      z:p.z
-    }));
+    // Draw shifted mesh visuals (shift only for overlay)
+    const shifted = lm.map(p => ({ x: p.x, y: Math.max(0, p.y - DRAW_Y_SHIFT), z: p.z }));
+    drawConnectors(ctx, shifted, FACEMESH_TESSELATION, { color: '#3ecaff', lineWidth: 1 });
+    drawConnectors(ctx, shifted, FACEMESH_RIGHT_EYE, { color: '#b8fff6', lineWidth: 1.5 });
+    drawConnectors(ctx, shifted, FACEMESH_LEFT_EYE, { color: '#b8fff6', lineWidth: 1.5 });
+    drawLandmarks(ctx, shifted, { color: '#b8fff6', lineWidth: 0.7 });
 
-    drawConnectors(ctx, shifted, FACEMESH_TESSELATION, {color:"#26d1ff", lineWidth:1});
-    drawLandmarks(ctx, shifted, {color:"#b8fff6", lineWidth:0.5});
+    statusEl.textContent = 'Face detected';
+    confEl.textContent = 'High';
 
-    statusEl.textContent = "Face detected";
-    confEl.textContent = "High";
+    // metrics
+    const earL = computeEAR(lm, LEFT_EYE), earR = computeEAR(lm, RIGHT_EYE), earAvg = (earL+earR)/2;
+    earEl.textContent = earAvg.toFixed(3);
 
-    // Measures
-    const earL=computeEAR(lm, LEFT_EYE);
-    const earR=computeEAR(lm, RIGHT_EYE);
-    const earAvg=(earL+earR)/2;
-    earEl.textContent=earAvg.toFixed(3);
-
-    const now=Date.now();
+    const now = Date.now();
     const closed = earAvg < 0.18;
     if(closed && !eyeClosedState){ eyeClosedState=true; eyeClosedStart=now; }
     else if(!closed && eyeClosedState){
-      const dur=now-eyeClosedStart;
-      if(dur>80){
-        blinkHistory.push(now);
-        blinkHistory = blinkHistory.filter(t => now - t <= 60000);
-      }
+      const dur = now - eyeClosedStart;
+      if(dur > 80){ blinkHistory.push(now); blinkHistory = blinkHistory.filter(t => now - t <= 60000); }
       eyeClosedState=false;
     }
     blinkEl.textContent = blinkHistory.length;
 
-    // bbox
+    // bounding box for sampling
     let minX=1,minY=1,maxX=0,maxY=0;
-    for(const p of lm){
-      minX=Math.min(minX,p.x); minY=Math.min(minY,p.y);
-      maxX=Math.max(maxX,p.x); maxY=Math.max(maxY,p.y);
-    }
-    const bx = minX*canvas.width, by=minY*canvas.height;
-    const bw = (maxX-minX)*canvas.width, bh=(maxY-minY)*canvas.height;
+    for(const p of lm){ minX=Math.min(minX,p.x); minY=Math.min(minY,p.y); maxX=Math.max(maxX,p.x); maxY=Math.max(maxY,p.y); }
+    const bx = minX*canvas.width, by = minY*canvas.height, bw = (maxX-minX)*canvas.width, bh = (maxY-minY)*canvas.height;
 
-    const faceRef = sampleRegion(bx+bw*0.4, by+bh*0.35, bw*0.2, bh*0.12);
-    skinEl.textContent=Math.round(faceRef.lum);
+    const faceRef = sampleRegion(bx + bw*0.4, by + bh*0.35, Math.max(8,Math.round(bw*0.2)), Math.max(6,Math.round(bh*0.12)));
+    skinEl.textContent = Math.round(faceRef.lum);
 
-    // Under-eye
-    const under = sampleRegion(bx+bw*0.28, by+bh*0.5, bw*0.44, bh*0.08);
-    const darkScore=Math.max(0, Math.round(faceRef.lum-under.lum));
-    darkEl.textContent=darkScore;
+    const leftUnder = sampleRegion(bx + bw*0.28, by + bh*0.5, Math.max(6, Math.round(bw*0.2)), Math.max(6, Math.round(bh*0.08)));
+    const rightUnder = sampleRegion(bx + bw*0.52, by + bh*0.5, Math.max(6, Math.round(bw*0.2)), Math.max(6, Math.round(bh*0.08)));
+    const underAvg = (leftUnder.lum + rightUnder.lum) / 2;
+    const darkScore = Math.max(0, Math.round(faceRef.lum - underAvg));
+    darkEl.textContent = darkScore;
 
-    // Mouth/lips
-    const lips = sampleRegion(bx+bw*0.3, by+bh*0.68, bw*0.4, bh*0.12);
-    lipEl.textContent=Math.round(lips.sat)+"%";
+    const mouthSample = sampleRegion(bx + bw*0.3, by + bh*0.68, Math.max(20, Math.round(bw*0.4)), Math.max(10, Math.round(bh*0.12)));
+    lipEl.textContent = Math.round(mouthSample.sat) + '%';
 
-    // redness
-    const redScore=Math.round(faceRef.r-faceRef.g);
-    redEl.textContent=redScore;
+    const redScore = Math.round(faceRef.r - faceRef.g);
+    redEl.textContent = redScore;
 
-    // Make simple findings
-    let findings=[];
-    if(earAvg<0.18) findings.push("Eyes tired");
-    if(darkScore>10) findings.push("Under-eye darkness");
-    if(faceRef.lum<80) findings.push("Dull skin");
-    if(lips.sat<15) findings.push("Dry lips");
+    // assemble findings
+    let findings = [];
+    if(earAvg < 0.18) findings.push('Eyes tired');
+    if(darkScore > 10) findings.push('Under-eye darkness');
+    if(faceRef.lum < 85) findings.push('Dull skin');
+    if(mouthSample.sat < 18) findings.push('Dry lips');
 
-    findingsShort.textContent = findings.length ? findings.join(" • ") : "No strong issues";
+    findingsShort.textContent = findings.length ? findings.join(' • ') : 'No strong issues';
 
-    lastText = findingsShort.textContent;
-    lastScores = {earAvg,blinkRate:blinkHistory.length,darkScore,faceLum:faceRef.lum,lipSat:lips.sat,redScore};
+    lastFindingsText = findingsShort.textContent;
+    lastNumericScores = { earAvg, blinkRate: blinkHistory.length, darkScore, faceLum: faceRef.lum, lipSat: mouthSample.sat, redScore };
   });
 
-  // Camera
-  let facing="user";
+  // camera
+  let facingMode = 'user';
   let cam;
-  async function startCam(){
-    if(cam) cam.stop();
-    const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:facing},audio:false});
-    video.srcObject=stream;
-    await video.play();
-    cam=new Camera(video,{onFrame:async ()=>await faceMesh.send({image:video}), width:640,height:480});
-    cam.start();
+  async function startCamera(){
+    if(cam){ cam.stop(); cam = null; }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode }, audio: false });
+      video.srcObject = stream;
+      await video.play();
+      cam = new Camera(video, { onFrame: async () => await faceMesh.send({ image: video }), width: 640, height: 480 });
+      cam.start();
+    } catch (e) {
+      statusEl.textContent = 'Camera not available or permission denied';
+      console.error(e);
+    }
   }
 
-  document.getElementById("flipBtn").onclick=async ()=>{
-    facing = (facing==="user") ? "environment" : "user";
-    await startCam();
-  };
+  document.getElementById('flipBtn').addEventListener('click', async ()=> {
+    facingMode = (facingMode === 'user') ? 'environment' : 'user';
+    await startCamera();
+  });
 
-  document.getElementById("scanBtn").onclick=async ()=>{
-    if(!lastText) return alert("Hold your face in front of camera first.");
-    const ans = await mockAssistant(lastText,lastScores);
-    const d = ans.data;
-    suggestionsBlock.innerHTML =
-      `<b>Summary:</b> ${d.summary}<br><b>Suggestions:</b><ul>`+
-      d.suggestions.map(s=>`<li>${s}</li>`).join("")+`</ul>`;
-  };
+  function captureThumbnail(maxSize=128){
+    try{
+      const w = video.videoWidth, h = video.videoHeight;
+      if(!w || !h) return null;
+      const scale = Math.min(1, maxSize / Math.max(w,h));
+      const cw = Math.round(w * scale), ch = Math.round(h * scale);
+      const c = document.createElement('canvas'); c.width = cw; c.height = ch;
+      c.getContext('2d').drawImage(video, 0, 0, cw, ch);
+      return c.toDataURL('image/jpeg', 0.7);
+    }catch(e){ return null; }
+  }
 
-  document.getElementById("speakBtn").onclick=()=> speak(suggestionsBlock.innerText);
+  async function callServer(findingsText, numericScores, thumbnail64){
+    try{
+      const resp = await fetch(API_PATH, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ findingsText, numericScores, thumbnail64, preferredLang: 'en' })
+      });
+      return await resp.json();
+    }catch(e){
+      console.error('callServer error', e);
+      return { error: e.message || String(e) };
+    }
+  }
 
-  await startCam();
+  document.getElementById('scanBtn').addEventListener('click', async () => {
+    if(!lastFindingsText) return alert('No readings yet — show your face clearly and try again.');
+    const ok = confirm('Upload a small anonymized summary + tiny thumbnail to the server for AI suggestions?');
+    if(!ok) return;
+    suggestionsBlock.textContent = 'Contacting AI assistant...';
+    const thumb = captureThumbnail(128);
+    const serverResp = await callServer(lastFindingsText, lastNumericScores, thumb);
+    if(serverResp && serverResp.ok && serverResp.data){
+      const data = serverResp.data;
+      if(data.summary) {
+        suggestionsBlock.innerHTML = `<b>Summary:</b> ${data.summary}<br><b>Suggestions:</b><ul>${(data.suggestions||[]).map(s=>`<li>${s}</li>`).join('')}</ul>`;
+      } else if(data.raw) {
+        suggestionsBlock.innerText = data.raw;
+      } else {
+        suggestionsBlock.innerText = JSON.stringify(data);
+      }
+    } else {
+      console.warn('Server response error', serverResp);
+      suggestionsBlock.innerHTML = `<b>Error:</b> ${serverResp?.error || 'Assistant unavailable'} — showing fallback suggestions.<br>
+        <ul><li>Drink water</li><li>Rest 10–15 min</li><li>Use cool compress</li></ul>`;
+    }
+  });
 
+  document.getElementById('speakBtn').addEventListener('click', ()=> {
+    const txt = suggestionsBlock.innerText || findingsShort.innerText;
+    if(!txt) return alert('No text to speak.');
+    speak(txt);
+  });
+
+  await startCamera();
 })();
 </script>
 </body>
