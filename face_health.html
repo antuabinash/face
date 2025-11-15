@@ -1,0 +1,296 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Face Health Scanner — Demo</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  :root{--bg:#061021;--card:#071226;--accent:#40c4ff;--muted:#98b6c6;}
+  body{margin:0;font-family:system-ui,Segoe UI,Roboto,Arial;background:var(--bg);color:#e6f7ff;display:flex;justify-content:center;padding:14px;box-sizing:border-box;}
+  .wrap{width:100%;max-width:900px;}
+  .card{background:linear-gradient(180deg, rgba(255,255,255,0.01), rgba(0,0,0,0.06));padding:12px;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,0.6);}
+  #videoWrap{position:relative;border-radius:12px;overflow:hidden;background:#000;}
+  video{width:100%;height:auto;display:block;}
+  canvas{position:absolute;left:0;top:0;pointer-events:none;}
+  .controls{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0;align-items:center;}
+  button{background:var(--accent);border:none;padding:8px 12px;border-radius:8px;color:#032a3b;font-weight:700;cursor:pointer;}
+  .metricGrid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px;}
+  .metric{background:rgba(255,255,255,0.02);padding:8px;border-radius:8px;font-size:14px;}
+  .muted{color:var(--muted);font-size:13px;}
+  footer{font-size:12px;color:var(--muted);margin-top:10px;}
+  @media (max-width:600px){
+    .metricGrid{grid-template-columns:repeat(1,1fr);}
+  }
+</style>
+</head>
+<body>
+  <div class="wrap card">
+    <h2 style="margin:4px 0 8px 0">Face Health Scanner — Demo</h2>
+
+    <div id="videoWrap">
+      <video id="video" autoplay playsinline></video>
+      <canvas id="overlay"></canvas>
+    </div>
+
+    <div class="controls">
+      <button id="flipBtn">Flip Camera</button>
+      <button id="scanBtn">Scan Now</button>
+      <button id="speakBtn">Speak Findings</button>
+      <div style="flex:1"></div>
+      <div class="muted">Tip: hold still for 1–2s & use good lighting.</div>
+    </div>
+
+    <div class="metricGrid">
+      <div class="metric">Status: <strong id="status">Waiting for face...</strong></div>
+      <div class="metric">Blink rate / min: <strong id="blinkRate">—</strong></div>
+      <div class="metric">Avg EAR: <strong id="ear">—</strong></div>
+
+      <div class="metric">Under-eye darkness: <strong id="darkScore">—</strong></div>
+      <div class="metric">Skin brightness: <strong id="skinBright">—</strong></div>
+      <div class="metric">Lip saturation: <strong id="lipSat">—</strong></div>
+
+      <div class="metric">Face redness score: <strong id="redScore">—</strong></div>
+      <div class="metric">Confidence: <strong id="conf">—</strong></div>
+      <div class="metric muted" id="findingsShort">No scan yet.</div>
+    </div>
+
+    <div style="height:10px"></div>
+    <div class="muted" id="suggestionsBlock">Press <strong>Scan Now</strong> to get suggestions.</div>
+
+    <footer>
+      <div class="muted"><strong>Disclaimer:</strong> For demonstration only. Not a medical device.</div>
+    </footer>
+  </div>
+
+<!-- MediaPipe -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+
+<script>
+(async ()=>{
+
+  // Mesh shift upward (your request)
+  const DRAW_Y_SHIFT = 0.02;  
+
+  const USE_MOCK = true; // keep true (no backend needed)
+
+  const video = document.getElementById('video');
+  const canvas = document.getElementById('overlay');
+  const ctx = canvas.getContext('2d');
+
+  let spanning=false;
+
+  function pdist(a,b){ const dx=(a.x-b.x)*canvas.width, dy=(a.y-b.y)*canvas.height; return Math.sqrt(dx*dx + dy*dy); }
+  function toPixel(lm){ return { x: lm.x * canvas.width, y: lm.y * canvas.height }; }
+
+  const statusEl = document.getElementById('status');
+  const confEl = document.getElementById('conf');
+  const blinkEl = document.getElementById('blinkRate');
+  const earEl = document.getElementById('ear');
+  const darkEl = document.getElementById('darkScore');
+  const skinEl = document.getElementById('skinBright');
+  const lipEl = document.getElementById('lipSat');
+  const redEl = document.getElementById('redScore');
+  const findingsShort = document.getElementById('findingsShort');
+  const suggestionsBlock = document.getElementById('suggestionsBlock');
+
+  let blinkHistory = [];
+  let eyeClosedState=false;
+  let eyeClosedStart=0;
+
+  const LEFT_EYE = [33,160,158,133,153,144];
+  const RIGHT_EYE = [362,385,387,263,373,380];
+
+  function computeEAR(landmarks, idxs){
+    const p1 = toPixel(landmarks[idxs[0]]);
+    const p2 = toPixel(landmarks[idxs[1]]);
+    const p3 = toPixel(landmarks[idxs[2]]);
+    const p4 = toPixel(landmarks[idxs[3]]);
+    const p5 = toPixel(landmarks[idxs[4]]);
+    const p6 = toPixel(landmarks[idxs[5]]);
+    const A = Math.hypot(p2.x-p6.x, p2.y-p6.y);
+    const B = Math.hypot(p3.x-p5.x, p3.y-p5.y);
+    const C = Math.hypot(p1.x-p4.x, p1.y-p4.y);
+    if(C===0) return 0;
+    return (A+B)/(2*C);
+  }
+
+  function sampleRegion(x,y,w,h){
+    try{
+      x = Math.max(0, Math.floor(x)); y = Math.max(0, Math.floor(y));
+      w = Math.max(1, Math.floor(w)); h = Math.max(1, Math.floor(h));
+
+      const img = ctx.getImageData(x,y,w,h).data;
+      let r=0,g=0,b=0;
+      for(let i=0;i<img.length;i+=4){
+        r += img[i];
+        g += img[i+1];
+        b += img[i+2];
+      }
+      const px = img.length/4 || 1;
+      r/=px; g/=px; b/=px;
+      const lum = 0.299*r + 0.587*g + 0.114*b;
+      const max = Math.max(r,g,b), min = Math.min(r,g,b);
+      const sat = max ? ((max-min)/max)*100 : 0;
+      return {r,g,b,lum,sat};
+    }catch(_){
+      return {r:0,g:0,b:0,lum:0,sat:0};
+    }
+  }
+
+  // Speech
+  function speak(text){
+    if(!("speechSynthesis" in window)) return;
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = "en-IN";
+    speechSynthesis.cancel();
+    speechSynthesis.speak(u);
+  }
+
+  // Mock health assistant
+  async function mockAssistant(txt, scores){
+    return {
+      status:"ok",
+      data:{
+        summary:"Mild fatigue & low hydration signs detected.",
+        suggestions:[
+          "Drink 1–2 glasses of water now.",
+          "Rest away from screen for 10–15 min.",
+          "Apply cool water under the eyes."
+        ]
+      }
+    };
+  }
+
+  // FaceMesh
+  const faceMesh = new FaceMesh({
+    locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${f}`
+  });
+  faceMesh.setOptions({
+    maxNumFaces:1,
+    refineLandmarks:true,
+    minDetectionConfidence:0.6,
+    minTrackingConfidence:0.6
+  });
+
+  let lastText="", lastScores={};
+
+  faceMesh.onResults((results)=>{
+    if(video.videoWidth){
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+    }
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+
+    if(!results.multiFaceLandmarks || !results.multiFaceLandmarks.length){
+      statusEl.textContent="No face";
+      return;
+    }
+
+    const lm = results.multiFaceLandmarks[0];
+
+    // Shift mesh Upwards
+    const shifted = lm.map(p => ({
+      x:p.x,
+      y:Math.max(0, p.y - DRAW_Y_SHIFT),
+      z:p.z
+    }));
+
+    drawConnectors(ctx, shifted, FACEMESH_TESSELATION, {color:"#26d1ff", lineWidth:1});
+    drawLandmarks(ctx, shifted, {color:"#b8fff6", lineWidth:0.5});
+
+    statusEl.textContent = "Face detected";
+    confEl.textContent = "High";
+
+    // Measures
+    const earL=computeEAR(lm, LEFT_EYE);
+    const earR=computeEAR(lm, RIGHT_EYE);
+    const earAvg=(earL+earR)/2;
+    earEl.textContent=earAvg.toFixed(3);
+
+    const now=Date.now();
+    const closed = earAvg < 0.18;
+    if(closed && !eyeClosedState){ eyeClosedState=true; eyeClosedStart=now; }
+    else if(!closed && eyeClosedState){
+      const dur=now-eyeClosedStart;
+      if(dur>80){
+        blinkHistory.push(now);
+        blinkHistory = blinkHistory.filter(t => now - t <= 60000);
+      }
+      eyeClosedState=false;
+    }
+    blinkEl.textContent = blinkHistory.length;
+
+    // bbox
+    let minX=1,minY=1,maxX=0,maxY=0;
+    for(const p of lm){
+      minX=Math.min(minX,p.x); minY=Math.min(minY,p.y);
+      maxX=Math.max(maxX,p.x); maxY=Math.max(maxY,p.y);
+    }
+    const bx = minX*canvas.width, by=minY*canvas.height;
+    const bw = (maxX-minX)*canvas.width, bh=(maxY-minY)*canvas.height;
+
+    const faceRef = sampleRegion(bx+bw*0.4, by+bh*0.35, bw*0.2, bh*0.12);
+    skinEl.textContent=Math.round(faceRef.lum);
+
+    // Under-eye
+    const under = sampleRegion(bx+bw*0.28, by+bh*0.5, bw*0.44, bh*0.08);
+    const darkScore=Math.max(0, Math.round(faceRef.lum-under.lum));
+    darkEl.textContent=darkScore;
+
+    // Mouth/lips
+    const lips = sampleRegion(bx+bw*0.3, by+bh*0.68, bw*0.4, bh*0.12);
+    lipEl.textContent=Math.round(lips.sat)+"%";
+
+    // redness
+    const redScore=Math.round(faceRef.r-faceRef.g);
+    redEl.textContent=redScore;
+
+    // Make simple findings
+    let findings=[];
+    if(earAvg<0.18) findings.push("Eyes tired");
+    if(darkScore>10) findings.push("Under-eye darkness");
+    if(faceRef.lum<80) findings.push("Dull skin");
+    if(lips.sat<15) findings.push("Dry lips");
+
+    findingsShort.textContent = findings.length ? findings.join(" • ") : "No strong issues";
+
+    lastText = findingsShort.textContent;
+    lastScores = {earAvg,blinkRate:blinkHistory.length,darkScore,faceLum:faceRef.lum,lipSat:lips.sat,redScore};
+  });
+
+  // Camera
+  let facing="user";
+  let cam;
+  async function startCam(){
+    if(cam) cam.stop();
+    const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:facing},audio:false});
+    video.srcObject=stream;
+    await video.play();
+    cam=new Camera(video,{onFrame:async ()=>await faceMesh.send({image:video}), width:640,height:480});
+    cam.start();
+  }
+
+  document.getElementById("flipBtn").onclick=async ()=>{
+    facing = (facing==="user") ? "environment" : "user";
+    await startCam();
+  };
+
+  document.getElementById("scanBtn").onclick=async ()=>{
+    if(!lastText) return alert("Hold your face in front of camera first.");
+    const ans = await mockAssistant(lastText,lastScores);
+    const d = ans.data;
+    suggestionsBlock.innerHTML =
+      `<b>Summary:</b> ${d.summary}<br><b>Suggestions:</b><ul>`+
+      d.suggestions.map(s=>`<li>${s}</li>`).join("")+`</ul>`;
+  };
+
+  document.getElementById("speakBtn").onclick=()=> speak(suggestionsBlock.innerText);
+
+  await startCam();
+
+})();
+</script>
+</body>
+</html>
